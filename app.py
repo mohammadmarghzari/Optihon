@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import datetime
 import plotly.express as px
+import requests
 
 # -------------------------------
 # تنظیمات صفحه و فونت سفارشی
@@ -54,7 +55,7 @@ h1, h2, h3, h4, h5, h6 {font-family: 'Vazirmatn', Arial, Tahoma, sans-serif !imp
 # -------------------------------
 # بخش انتخاب نماد و بازه زمانی
 assets = ["BTC", "ETH"]
-st.markdown("<div class='big-title'>Deribit Trade Analyzer</div>", unsafe_allow_html=True)
+st.markdown("<div class='big-title'>Optihon - Options Viewer</div>", unsafe_allow_html=True)
 col_asset, col_start, col_end = st.columns(3)
 with col_asset:
     asset = st.selectbox("Asset", assets)
@@ -65,102 +66,132 @@ with col_end:
     end_date = st.date_input("End Date", datetime.date.today())
     end_time = st.time_input("End Time", datetime.datetime.now().time())
 
+# ورودی URL یا الگوی endpoint (بدون احراز هویت)
+st.markdown("") 
+st.markdown("### تنظیم URL آپشن API (بدون احراز هویت)")
+st.markdown("مثال قالب‌ها: https://api.example.com/options?asset={asset}  یا  https://api.example.com/options/{asset}")
+options_api_template = st.text_input("Options API URL template (use {asset} to inject asset)", "")
+
 # تبدیل تاریخ و ساعت به دیتای مناسب
 start_datetime = datetime.datetime.combine(start_date, start_time)
 end_datetime = datetime.datetime.combine(end_date, end_time)
 
-st.markdown("")
+# -----------------------------------------------
+# تابع کمکی برای ساخت URL نهایی از template
+def build_url_from_template(template: str, asset: str) -> str:
+    if not template:
+        return ""
+    if "{asset}" in template:
+        return template.format(asset=asset)
+    # اگر قالب شامل query است فرض می‌کنیم param اضافه می‌کنیم
+    if "?" in template:
+        return f"{template}&asset={asset}"
+    # اگر انتها اسلش داشت یا نه
+    if template.endswith("/"):
+        return template + asset
+    return template + "/" + asset
 
-# -------------------------------
-# دکمه اجرا و تحلیل داده‌ها
-if st.button("Analyze Trades", use_container_width=True):
-    # -----------------------------------------------
-    # این بخش را با APIهای خودت جایگزین کن!
-    # داده‌های نمونه برای نمایش فرمت و ساختار
-    # -----------------------------------------------
+@st.cache_data(ttl=60)
+def fetch_options(url_template: str, asset: str):
+    url = build_url_from_template(url_template, asset)
+    if not url:
+        return pd.DataFrame()  # خالی یعنی از حالت نمونه استفاده شود
+    try:
+        resp = requests.get(url, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        # نگاشتِ ساختارهای رایج پاسخ به لیست آیتم‌ها
+        if isinstance(data, list):
+            items = data
+        elif isinstance(data, dict):
+            # چک کردن کلیدهای رایج
+            items = data.get("result") or data.get("data") or data.get("options") or data.get("items") or []
+        else:
+            items = []
+        mapped = []
+        for it in items:
+            # سعی می‌کنیم فیلدها را از نمونه‌های معمول استخراج کنیم
+            symbol = it.get("instrument_name") or it.get("symbol") or it.get("id") or it.get("name")
+            option_type = it.get("option_type") or it.get("type") or it.get("side")
+            if option_type:
+                option_type = option_type.lower()
+                if option_type.startswith("c"):
+                    option_type = "call"
+                elif option_type.startswith("p"):
+                    option_type = "put"
+            strike = it.get("strike") or it.get("strike_price") or it.get("strikePrice")
+            price = it.get("mark_price") or it.get("last_price") or it.get("price") or it.get("mid_price")
+            expected_profit = it.get("expected_profit") or it.get("expectedReturn") or it.get("expected")
+            risk_index = it.get("risk_index") or it.get("risk") or it.get("iv")
+            probability = it.get("probability") or it.get("prob") or it.get("win_chance")
+            profit_percent = it.get("profit_percent") or it.get("profitPercent")
+            mapped.append({
+                "symbol": symbol or "",
+                "type": option_type or "",
+                "price": price if price is not None else "",
+                "strike": strike if strike is not None else "",
+                "expected_profit": expected_profit if expected_profit is not None else "",
+                "risk_index": risk_index if risk_index is not None else "",
+                "probability": probability if probability is not None else "",
+                "profit_percent": profit_percent if profit_percent is not None else ""
+            })
+        return pd.DataFrame(mapped)
+    except Exception as e:
+        # خطای شبکه یا پردازش
+        st.error(f"Failed to fetch options from API: {e}")
+        return pd.DataFrame()
 
-    # اطلاعات معاملات
-    total_positions = 9004
-    buy_positions = 4239
-    sell_positions = 4765
-    trades_chart_data = pd.DataFrame({
-        'timestamp': pd.date_range(start=start_datetime, end=end_datetime, periods=10),
-        'total': [i*1000 for i in range(10)],
-        'buy': [i*500 for i in range(10)],
-        'sell': [i*500 for i in range(10,0,-1)],
-    })
+# -----------------------------------------------
+# دکمه اجرا و نمایش آپشن‌ها
+if st.button("Load Options", use_container_width=True):
+    df_options = fetch_options(options_api_template, asset)
 
-    # اطلاعات قراردادهای آپشن (جدول کامل)
-    options_data = [
-        {
-            "symbol": "BTC-29AUG25-12000-C",
-            "type": "call",
-            "price": 13222,
-            "strike": 12000,
-            "expected_profit": 5324,
-            "risk_index": 0.219,
-            "probability": "86%",
-            "profit_percent": "27.18%"
-        },
-        {
-            "symbol": "BTC-29AUG25-12500-C",
-            "type": "call",
-            "price": 13195,
-            "strike": 12500,
-            "expected_profit": 5316,
-            "risk_index": 0.216,
-            "probability": "81%",
-            "profit_percent": "25.15%"
-        },
-        {
-            "symbol": "BTC-29AUG25-12800-P",
-            "type": "put",
-            "price": 13007,
-            "strike": 12800,
-            "expected_profit": 5466,
-            "risk_index": 0.388,
-            "probability": "81%",
-            "profit_percent": "32.39%"
-        },
-        {
-            "symbol": "BTC-29AUG25-13000-P",
-            "type": "put",
-            "price": 13213,
-            "strike": 13000,
-            "expected_profit": 5748,
-            "risk_index": 0.372,
-            "probability": "80%",
-            "profit_percent": "30.15%"
-        },
-    ]
-    df_options = pd.DataFrame(options_data)
-
-    # -----------------------------------------------
-    # نمایش خلاصه اطلاعات معاملات بصورت باکس رنگی و بزرگ
-    st.markdown(
-        f"""
-        <div class='summary-box'>
-            <span style='font-size:26px;color:#256D85;font-weight:700;'>{asset}</span><br>
-            <span style='font-size:18px;'><b>Total Positions:</b> <span style='color:#1C3879'>{total_positions}</span>
-            &nbsp; | &nbsp;
-            <b>Buy Positions:</b> <span style='color:#35a79c'>{buy_positions}</span>
-            &nbsp; | &nbsp;
-            <b>Sell Positions:</b> <span style='color:#e85a0c'>{sell_positions}</span></span><br>
-            <span style='font-size:16px;'><b>Date Range:</b> {start_datetime.strftime('%Y/%m/%d %H:%M:%S')} to {end_datetime.strftime('%Y/%m/%d %H:%M:%S')}</span>
-        </div>
-        """, unsafe_allow_html=True
-    )
-    st.markdown("")
-
-    # نمایش نمودار معاملات با Plotly واکنش‌گرا
-    st.subheader("Positions Over Time")
-    fig = px.line(trades_chart_data, x='timestamp', y=['total', 'buy', 'sell'],
-                  labels={'value':'Positions', 'variable':'Type', 'timestamp':'Time'},
-                  color_discrete_map={'total':'#1C3879', 'buy':'#35a79c', 'sell':'#e85a0c'})
-    fig.update_layout(template='plotly_white', legend_title_text='Position Type')
-    st.plotly_chart(fig, use_container_width=True)
-
-    st.markdown("---")
+    # اگر پاسخ API خالی بود از داده نمونه استفاده می‌کنیم تا UI پر باشد
+    if df_options.empty:
+        st.warning("No data returned from the provided API template — showing sample data.")
+        options_data = [
+            {
+                "symbol": "BTC-29AUG25-12000-C",
+                "type": "call",
+                "price": 13222,
+                "strike": 12000,
+                "expected_profit": 5324,
+                "risk_index": 0.219,
+                "probability": "86%",
+                "profit_percent": "27.18%"
+            },
+            {
+                "symbol": "BTC-29AUG25-12500-C",
+                "type": "call",
+                "price": 13195,
+                "strike": 12500,
+                "expected_profit": 5316,
+                "risk_index": 0.216,
+                "probability": "81%",
+                "profit_percent": "25.15%"
+            },
+            {
+                "symbol": "BTC-29AUG25-12800-P",
+                "type": "put",
+                "price": 13007,
+                "strike": 12800,
+                "expected_profit": 5466,
+                "risk_index": 0.388,
+                "probability": "81%",
+                "profit_percent": "32.39%"
+            },
+            {
+                "symbol": "BTC-29AUG25-13000-P",
+                "type": "put",
+                "price": 13213,
+                "strike": 13000,
+                "expected_profit": 5748,
+                "risk_index": 0.372,
+                "probability": "80%",
+                "profit_percent": "30.15%"
+            },
+        ]
+        df_options = pd.DataFrame(options_data)
 
     # نمایش جدول آپشن‌ها با رنگ و تم زیبا
     st.subheader("Options Contracts (All)")
@@ -172,7 +203,7 @@ if st.button("Analyze Trades", use_container_width=True):
 
     # بهترین قراردادهای اختیار خرید (call)
     st.markdown("<div class='info-table-title'>به صرفه ترین قراردادهای اختیار خرید (جهت خرید)</div>", unsafe_allow_html=True)
-    top_calls = df_options[df_options["type"] == "call"].sort_values("expected_profit", ascending=False).head(3)
+    top_calls = df_options[df_options["type"].str.lower() == "call"].sort_values("expected_profit", ascending=False).head(3)
     st.dataframe(top_calls.style.set_properties(**{
         'background-color': '#e3f0ff',
         'color': '#256D85',
@@ -182,7 +213,7 @@ if st.button("Analyze Trades", use_container_width=True):
 
     # بهترین قراردادهای اختیار فروش (put)
     st.markdown("<div class='info-table-title'>به صرفه ترین قراردادهای اختیار فروش (جهت فروش)</div>", unsafe_allow_html=True)
-    top_puts = df_options[df_options["type"] == "put"].sort_values("expected_profit", ascending=False).head(3)
+    top_puts = df_options[df_options["type"].str.lower() == "put"].sort_values("expected_profit", ascending=False).head(3)
     st.dataframe(top_puts.style.set_properties(**{
         'background-color': '#e3f0ff',
         'color': '#e85a0c',
@@ -192,14 +223,15 @@ if st.button("Analyze Trades", use_container_width=True):
 
     # نمایش توضیح پایین جدول
     st.info("این بخش صرفاً جهت نمایش برترین آپشن‌هاست و تضمین سوددهی ندارد. تحلیل‌ها بر اساس داده‌های API شما محاسبه می‌شوند.")
-
 else:
-    st.warning("برای شروع تحلیل، ابتدا پارامترهای بالا را انتخاب و سپس دکمه Analyze Trades را بزنید.")
+    st.warning("برای مشاهده قراردادها، ابتدا URL آپشن API را وارد کرده و سپس دکمه Load Options را بزنید.")
 
 # -------------------------------
 # راهنمای جایگزینی API:
 st.markdown("""
 ---
-#### <span style='color:#256D85'>راهنمای جایگزینی API:</span>
-در ابتدای هر بخش داده (معاملات و آپشن)، فقط کافیست به جای داده‌های نمونه، خروجی API خودتان را با همان فرمت و فیلدها جایگزین کنید.
+#### <span style='color:#256D85'>راهنمای تنظیم URL:</span>
+- اگر API شما قالبی مثل `https://api.example.com/options?asset=BTC` دارد، مقدار `https://api.example.com/options?asset={asset}` را وارد کنید.
+- اگر قالبی مثل `https://api.example.com/options/BTC` دارد، مقدار `https://api.example.com/options/{asset}` را وارد کنید.
+- اگر endpoint شما پارامترهای متفاوتی نیاز دارد، می‌توانید URL کامل را وارد کنید و پنجره لاگ خطا را برای دیدن ساختار پاسخ بررسی کنید.
 """, unsafe_allow_html=True)
